@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Entornos y herramientas
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Pesos de modelos e imágenes generadas
+*.pth
+*.part
+upscaled/

@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "upgrade-resolution"
+version = "0.1.0"
+description = "Mejora la calidad y la resolución de imágenes con IA (Real-ESRGAN)."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Juan Manuel Gerez" }]
+dependencies = [
+    "numpy>=1.26",
+    "pillow>=10.0",
+    "spandrel>=0.4",
+    "torch>=2.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.10",
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+upgrade-resolution = "upgrade_resolution.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 99
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "RUF", "D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D101", "D102", "D103", "D107"]
+
+[tool.mypy]
+strict = true
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["spandrel", "spandrel.*"]
+ignore_missing_imports = true
