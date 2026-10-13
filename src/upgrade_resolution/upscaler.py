@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
@@ -18,10 +19,27 @@ DEFAULT_TILE_SIZE = 512
 DEFAULT_TILE_OVERLAP = 16
 
 # A healthy network's output, averaged back down to the input size, differs from the
-# input by about 0.02 per channel; a broken GPU kernel's black or garbled output
-# differs by 0.3 or more. The threshold sits between them, with room for noisy
-# photos, whose noise the network removes.
+# input by about 0.02 per channel, and by less on dark tiles. A broken GPU kernel's
+# output is black or garbled, which differs by about the tile's own brightness, so
+# the limit scales with it: half the tile's mean value, plus a small floor, capped
+# for bright tiles. That leaves room for noisy photos, whose noise the network removes.
 MAX_TILE_DEVIATION = 0.15
+RELATIVE_TILE_DEVIATION = 0.5
+MIN_TILE_DEVIATION = 0.01
+
+# MIOpen, the convolution library of ROCm, benchmarks every candidate kernel the first
+# time it meets a convolution shape, and on Windows some of its GEMM, direct and
+# implicit-GEMM kernels take over a second or fault on the GPU. The driver is then
+# reset (TDR) and the tile comes out black. Winograd kernels cover the 3x3
+# convolutions of every supported network, and run in well under a millisecond per
+# layer, so they are the only ones enabled. Variables the user sets take precedence.
+MIOPEN_SETTINGS = {
+    "MIOPEN_FIND_MODE": "NORMAL",
+    "MIOPEN_DEBUG_CONV_GEMM": "0",
+    "MIOPEN_DEBUG_CONV_DIRECT": "0",
+    "MIOPEN_DEBUG_CONV_IMPLICIT_GEMM": "0",
+    "MIOPEN_DEBUG_CONV_FFT": "0",
+}
 
 
 class CorruptOutputError(RuntimeError):
@@ -62,6 +80,18 @@ def resolve_device(name: str) -> torch.device:
     if torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
+
+
+def configure_miopen() -> None:
+    """On ROCm builds of PyTorch, restrict MIOpen to its reliable kernels.
+
+    Must run before the first convolution; see ``MIOPEN_SETTINGS``. It does nothing
+    on CUDA or CPU builds, and keeps any of these variables the user already set.
+    """
+    if torch.version.hip is None:
+        return
+    for name, value in MIOPEN_SETTINGS.items():
+        os.environ.setdefault(name, value)
 
 
 def describe_device(device: torch.device) -> str:
@@ -139,6 +169,7 @@ class Upscaler:
             ValueError: If the file does not contain a single-image model.
             OSError: If the file cannot be read.
         """
+        configure_miopen()
         torch_device = resolve_device(device)
         descriptor = spandrel.ModelLoader(device=torch_device).load_from_file(weights)
         if not isinstance(descriptor, spandrel.ImageModelDescriptor):
@@ -250,13 +281,17 @@ def _is_plausible(tile: FloatImage, output: FloatImage, scale: int) -> bool:
 
     The output is averaged over each ``scale`` x ``scale`` block, which undoes the
     enlargement, and compared with the tile: a genuine enhancement only changes
-    fine detail, so the mean absolute difference stays small.
+    fine detail, so the mean absolute difference stays small relative to the
+    tile's brightness.
     """
     if not np.isfinite(output).all():
         return False
     height, width, channels = tile.shape
     reduced = output.reshape(height, scale, width, scale, channels).mean(axis=(1, 3))
-    return float(np.abs(reduced - tile).mean()) <= MAX_TILE_DEVIATION
+    limit = min(
+        MAX_TILE_DEVIATION, MIN_TILE_DEVIATION + RELATIVE_TILE_DEVIATION * float(tile.mean())
+    )
+    return float(np.abs(reduced - tile).mean()) <= limit
 
 
 def _resize(image: FloatImage, height: int, width: int) -> FloatImage:

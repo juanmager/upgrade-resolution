@@ -42,9 +42,25 @@ existe, se omite; usa `--overwrite` para reemplazarlo. Ejecuta
 | `anime`   | Capturas de pantalla, texto, dibujos, colores planos   | Rápida    |
 | `general` | Uso general cuando prima la velocidad                  | Rápida    |
 
-La primera ejecución en GPU AMD tarda más mientras ROCm compila sus kernels. Las
-siguientes ya van a velocidad normal. Si aparece un error de memoria de GPU,
+La primera vez que aparece cada tamaño de bloque, ROCm compila sus kernels y
+tarda alrededor de un segundo más. Si aparece un error de memoria de GPU,
 reduce el tamaño de bloque, por ejemplo con `--tile 256`.
+
+Cada bloque se compara con su entrada. Si la red devuelve un resultado que no
+puede ser una versión de la imagen (negro, o con valores inválidos), se repite
+en precisión completa y, si sigue mal, se informa el error sin guardar nada.
+
+### GPU AMD en Windows
+
+Al ver por primera vez cada forma de convolución, MIOpen (la biblioteca de
+convoluciones de ROCm) mide todos sus kernels candidatos. En Windows, algunos
+(GEMM, directos) tardan más de un segundo o provocan un fallo de página en la
+GPU: el controlador se reinicia (aviso de AMD de tiempo de espera agotado,
+evento `LiveKernelEvent 0x141` con `PF:1`) y el bloque sale negro. Por eso el
+programa habilita solo los kernels Winograd, que cubren todas las convoluciones
+3x3 de estos modelos y tardan menos de un milisegundo por capa. Se puede
+cambiar con las variables `MIOPEN_*` de `MIOPEN_SETTINGS` en `upscaler.py`: si
+ya están definidas en el entorno, el programa respeta su valor.
 
 ## Diseño
 

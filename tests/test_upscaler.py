@@ -6,11 +6,16 @@ Testing strategy for Upscaler.upscale:
     partition on image size vs tile size: smaller, larger
     partition on network output: plausible; black or NaN without full-precision
         fallback; black with a fallback that is plausible, or also black
+    partition on tile brightness (for corrupt output): mid-tone, dark
 Testing strategy for Upscaler construction: valid, tile_size < 1, overlap < 0.
 Testing strategy for resolve_device: "auto", explicit name.
+Testing strategy for configure_miopen: ROCm build with variables unset or already
+    set by the user, non-ROCm build.
 """
 
 from __future__ import annotations
+
+import os
 
 import numpy as np
 import pytest
@@ -18,7 +23,13 @@ import torch
 
 from conftest import BlackNetwork, NanNetwork, NearestNetwork
 from upgrade_resolution.image_io import RasterImage
-from upgrade_resolution.upscaler import CorruptOutputError, Upscaler, resolve_device
+from upgrade_resolution.upscaler import (
+    MIOPEN_SETTINGS,
+    CorruptOutputError,
+    Upscaler,
+    configure_miopen,
+    resolve_device,
+)
 
 CPU = torch.device("cpu")
 
@@ -89,6 +100,22 @@ def test_corrupt_output_is_rejected(network: NearestNetwork) -> None:
         upscaler.upscale(random_image(6, 10))
 
 
+def test_black_output_on_a_dark_image_is_rejected() -> None:
+    dark = RasterImage(rgb=random_image(6, 10).rgb * np.float32(0.1))
+    upscaler = Upscaler(BlackNetwork(2), device=CPU, tile_size=4)
+
+    with pytest.raises(CorruptOutputError):
+        upscaler.upscale(dark)
+
+
+def test_dark_image_is_accepted() -> None:
+    dark = RasterImage(rgb=random_image(6, 10).rgb * np.float32(0.1))
+
+    result = Upscaler(NearestNetwork(2), device=CPU, tile_size=4).upscale(dark)
+
+    assert (result.width, result.height) == (20, 12)
+
+
 def test_corrupt_half_precision_falls_back_to_full_precision() -> None:
     calls = 0
 
@@ -128,3 +155,25 @@ def test_corrupt_full_precision_fallback_is_rejected() -> None:
 def test_resolve_device() -> None:
     assert resolve_device("cpu") == CPU
     assert resolve_device("auto").type in {"cpu", "cuda", "mps"}
+
+
+def test_configure_miopen_on_rocm(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(torch.version, "hip", "7.1")
+    for name in MIOPEN_SETTINGS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("MIOPEN_FIND_MODE", "FAST")
+
+    configure_miopen()
+
+    assert os.environ["MIOPEN_FIND_MODE"] == "FAST"
+    assert os.environ["MIOPEN_DEBUG_CONV_GEMM"] == "0"
+
+
+def test_configure_miopen_elsewhere(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(torch.version, "hip", None)
+    for name in MIOPEN_SETTINGS:
+        monkeypatch.delenv(name, raising=False)
+
+    configure_miopen()
+
+    assert not any(name in os.environ for name in MIOPEN_SETTINGS)
