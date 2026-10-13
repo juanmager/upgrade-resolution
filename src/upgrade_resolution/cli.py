@@ -12,7 +12,12 @@ import torch
 
 from upgrade_resolution.image_io import SUPPORTED_SUFFIXES, load_image, save_image
 from upgrade_resolution.models import DEFAULT_MODEL, MODELS, ModelSpec, ensure_weights, is_cached
-from upgrade_resolution.upscaler import DEFAULT_TILE_SIZE, Upscaler, describe_device
+from upgrade_resolution.upscaler import (
+    DEFAULT_TILE_SIZE,
+    CorruptOutputError,
+    Upscaler,
+    describe_device,
+)
 
 UpscalerFactory = Callable[[ModelSpec, str, int], Upscaler]
 
@@ -205,7 +210,7 @@ def _process(
     except torch.cuda.OutOfMemoryError:
         _report(f"\n{prefix}: memoria de GPU insuficiente; prueba con un --tile más pequeño")
         return False
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, CorruptOutputError) as error:
         _report(f"\n{prefix}: error: {error}")
         return False
     elapsed = time.perf_counter() - started

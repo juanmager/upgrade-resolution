@@ -4,6 +4,8 @@ Testing strategy for Upscaler.upscale:
     partition on scale: None (native), integer == native, 1, non-integer, <= 0
     partition on alpha: absent, present
     partition on image size vs tile size: smaller, larger
+    partition on network output: plausible; black or NaN without full-precision
+        fallback; black with a fallback that is plausible, or also black
 Testing strategy for Upscaler construction: valid, tile_size < 1, overlap < 0.
 Testing strategy for resolve_device: "auto", explicit name.
 """
@@ -14,9 +16,9 @@ import numpy as np
 import pytest
 import torch
 
-from conftest import NearestNetwork
+from conftest import BlackNetwork, NanNetwork, NearestNetwork
 from upgrade_resolution.image_io import RasterImage
-from upgrade_resolution.upscaler import Upscaler, resolve_device
+from upgrade_resolution.upscaler import CorruptOutputError, Upscaler, resolve_device
 
 CPU = torch.device("cpu")
 
@@ -77,6 +79,50 @@ def test_non_positive_scale_is_rejected(scale: float) -> None:
 def test_invalid_configuration_is_rejected(tile_size: int, overlap: int) -> None:
     with pytest.raises(AssertionError):
         Upscaler(NearestNetwork(2), device=CPU, tile_size=tile_size, overlap=overlap)
+
+
+@pytest.mark.parametrize("network", [BlackNetwork(2), NanNetwork(2)])
+def test_corrupt_output_is_rejected(network: NearestNetwork) -> None:
+    upscaler = Upscaler(network, device=CPU, tile_size=4)
+
+    with pytest.raises(CorruptOutputError):
+        upscaler.upscale(random_image(6, 10))
+
+
+def test_corrupt_half_precision_falls_back_to_full_precision() -> None:
+    calls = 0
+
+    def full_precision() -> NearestNetwork:
+        nonlocal calls
+        calls += 1
+        return NearestNetwork(2)
+
+    image = random_image(6, 10)
+    upscaler = Upscaler(
+        BlackNetwork(2),
+        device=CPU,
+        dtype=torch.float16,
+        tile_size=4,
+        full_precision=full_precision,
+    )
+
+    result = upscaler.upscale(image)
+
+    assert calls == 1
+    expected = np.repeat(np.repeat(image.rgb, 2, axis=0), 2, axis=1)
+    np.testing.assert_allclose(result.rgb, expected, atol=1e-6)
+
+
+def test_corrupt_full_precision_fallback_is_rejected() -> None:
+    upscaler = Upscaler(
+        BlackNetwork(2),
+        device=CPU,
+        dtype=torch.float16,
+        full_precision=lambda: BlackNetwork(2),
+    )
+
+    with pytest.raises(CorruptOutputError):
+        upscaler.upscale(random_image(6, 10))
 
 
 def test_resolve_device() -> None:

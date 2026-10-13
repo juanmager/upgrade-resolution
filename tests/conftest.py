@@ -25,6 +25,20 @@ class NearestNetwork:
         return image.repeat_interleave(self.scale, dim=2).repeat_interleave(self.scale, dim=3)
 
 
+class BlackNetwork(NearestNetwork):
+    """Like NearestNetwork, but returns all black, as a broken GPU kernel can."""
+
+    def __call__(self, image: torch.Tensor) -> torch.Tensor:
+        return torch.zeros_like(super().__call__(image))
+
+
+class NanNetwork(NearestNetwork):
+    """Like NearestNetwork, but returns NaN, as an overflow in half precision can."""
+
+    def __call__(self, image: torch.Tensor) -> torch.Tensor:
+        return torch.full_like(super().__call__(image), float("nan"))
+
+
 @pytest.fixture
 def fake_factory() -> UpscalerFactory:
     def factory(spec: ModelSpec, device: str, tile_size: int) -> Upscaler:

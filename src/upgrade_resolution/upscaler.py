@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
@@ -15,6 +16,16 @@ from upgrade_resolution.tiling import FloatImage, ProgressCallback, upscale_tile
 
 DEFAULT_TILE_SIZE = 512
 DEFAULT_TILE_OVERLAP = 16
+
+# A healthy network's output, averaged back down to the input size, differs from the
+# input by about 0.02 per channel; a broken GPU kernel's black or garbled output
+# differs by 0.3 or more. The threshold sits between them, with room for noisy
+# photos, whose noise the network removes.
+MAX_TILE_DEVIATION = 0.15
+
+
+class CorruptOutputError(RuntimeError):
+    """The network produced an output that cannot be a version of its input."""
 
 
 class SuperResolutionNetwork(Protocol):
@@ -72,7 +83,8 @@ class Upscaler:
         result to the requested scale.
 
     Rep invariant:
-        network.scale >= 1, tile_size >= 1, overlap >= 0.
+        network.scale >= 1, tile_size >= 1, overlap >= 0;
+        full_precision is None if dtype is float32.
 
     Safety from rep exposure:
         All fields are private and never returned; ``device`` returns an immutable
@@ -87,13 +99,26 @@ class Upscaler:
         dtype: torch.dtype = torch.float32,
         tile_size: int = DEFAULT_TILE_SIZE,
         overlap: int = DEFAULT_TILE_OVERLAP,
+        full_precision: Callable[[], SuperResolutionNetwork] | None = None,
     ) -> None:
-        """Wrap ``network``, which must already live on ``device`` in ``dtype``."""
+        """Wrap ``network``, which must already live on ``device`` in ``dtype``.
+
+        Args:
+            network: Network that enlarges each tile.
+            device: Device on which ``network`` lives.
+            dtype: Precision of ``network``'s parameters.
+            tile_size: Side of each tile in input pixels; must be >= 1.
+            overlap: Context pixels added around each tile; must be >= 0.
+            full_precision: For a reduced-precision ``network``, returns the same
+                network in float32. It is called at most once, if a tile comes out
+                corrupt, and every later tile then runs in float32.
+        """
         self._network = network
         self._device = device
         self._dtype = dtype
         self._tile_size = tile_size
         self._overlap = overlap
+        self._full_precision = full_precision
         self._check_rep()
 
     @classmethod
@@ -120,11 +145,18 @@ class Upscaler:
             raise ValueError(f"{weights.name} no contiene un modelo de imagen compatible")
         descriptor.eval()
         dtype = torch.float32
+        full_precision = None
         if torch_device.type == "cuda" and descriptor.supports_half:
             descriptor.half()
             dtype = torch.float16
+            full_precision = descriptor.float
         return cls(
-            descriptor, device=torch_device, dtype=dtype, tile_size=tile_size, overlap=overlap
+            descriptor,
+            device=torch_device,
+            dtype=dtype,
+            tile_size=tile_size,
+            overlap=overlap,
+            full_precision=full_precision,
         )
 
     @property
@@ -161,6 +193,8 @@ class Upscaler:
 
         Raises:
             ValueError: If ``scale`` is not positive.
+            CorruptOutputError: If the network returns a tile that is not a plausible
+                version of its input (e.g. black), even in full precision.
         """
         target_scale = self.native_scale if scale is None else scale
         if target_scale <= 0:
@@ -180,6 +214,23 @@ class Upscaler:
         return RasterImage(rgb=_resize(enhanced, height, width), alpha=alpha)
 
     def _run_network(self, tile: FloatImage) -> FloatImage:
+        output = self._infer(tile)
+        if _is_plausible(tile, output, self.native_scale):
+            return output
+        if self._full_precision is not None:
+            self._network = self._full_precision()
+            self._dtype = torch.float32
+            self._full_precision = None
+            self._check_rep()
+            output = self._infer(tile)
+            if _is_plausible(tile, output, self.native_scale):
+                return output
+        raise CorruptOutputError(
+            f"la red devolvió un resultado corrupto en {describe_device(self._device)}; "
+            "prueba otra vez o usa --device cpu"
+        )
+
+    def _infer(self, tile: FloatImage) -> FloatImage:
         batch = _to_tensor(tile).to(device=self._device, dtype=self._dtype)
         with torch.inference_mode():
             output = self._network(batch)
@@ -189,6 +240,23 @@ class Upscaler:
         assert self._network.scale >= 1, "network.scale debe ser >= 1"
         assert self._tile_size >= 1, "tile_size debe ser >= 1"
         assert self._overlap >= 0, "overlap debe ser >= 0"
+        assert self._full_precision is None or self._dtype != torch.float32, (
+            "full_precision solo tiene sentido con dtype reducido"
+        )
+
+
+def _is_plausible(tile: FloatImage, output: FloatImage, scale: int) -> bool:
+    """Return whether ``output`` could be ``tile`` enlarged ``scale`` times.
+
+    The output is averaged over each ``scale`` x ``scale`` block, which undoes the
+    enlargement, and compared with the tile: a genuine enhancement only changes
+    fine detail, so the mean absolute difference stays small.
+    """
+    if not np.isfinite(output).all():
+        return False
+    height, width, channels = tile.shape
+    reduced = output.reshape(height, scale, width, scale, channels).mean(axis=(1, 3))
+    return float(np.abs(reduced - tile).mean()) <= MAX_TILE_DEVIATION
 
 
 def _resize(image: FloatImage, height: int, width: int) -> FloatImage:

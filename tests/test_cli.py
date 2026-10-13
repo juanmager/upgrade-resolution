@@ -5,6 +5,7 @@ Testing strategy for main:
         unsupported file, empty directory
     partition on destination: absent, present without --overwrite, present with it
     partition on image validity: all valid, some corrupt
+    partition on network output: plausible, corrupt
     partition on options: defaults, --scale, --output-dir, --format, invalid --scale
 Testing strategy for output_path: with and without output_dir, integer and
     fractional scale.
@@ -16,8 +17,10 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 from PIL import Image
 
+from conftest import BlackNetwork
 from upgrade_resolution.cli import (
     EXIT_OK,
     EXIT_SOME_FAILED,
@@ -26,6 +29,8 @@ from upgrade_resolution.cli import (
     main,
     output_path,
 )
+from upgrade_resolution.models import ModelSpec
+from upgrade_resolution.upscaler import Upscaler
 
 
 def write_image(path: Path, width: int = 6, height: int = 4) -> Path:
@@ -98,6 +103,18 @@ def test_corrupt_image_fails_but_others_continue(
 
     assert status == EXIT_SOME_FAILED
     assert (tmp_path / "upscaled" / "sana_x2.png").is_file()
+
+
+def test_corrupt_network_output_is_not_saved(tmp_path: Path) -> None:
+    def black_factory(spec: ModelSpec, device: str, tile_size: int) -> Upscaler:
+        return Upscaler(BlackNetwork(2), device=torch.device("cpu"), tile_size=tile_size)
+
+    source = write_image(tmp_path / "foto.png")
+
+    status = main([str(source)], upscaler_factory=black_factory)
+
+    assert status == EXIT_SOME_FAILED
+    assert not (tmp_path / "upscaled" / "foto_x2.png").exists()
 
 
 @pytest.mark.parametrize("name", ["no_existe.png", "documento.txt", "vacia"])
