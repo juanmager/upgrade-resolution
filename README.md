@@ -102,3 +102,10 @@ que sea seguro ante errores, fácil de entender y esté preparado para cambios.
 .venv\Scripts\ruff format src tests
 .venv\Scripts\mypy                 # tipos en modo estricto
 ```
+
+## Licencia
+
+MIT, ver [LICENSE](LICENSE). Los pesos de los modelos no forman parte de este
+repositorio: se descargan del proyecto
+[Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN), que los distribuye bajo
+licencia BSD-3-Clause.
