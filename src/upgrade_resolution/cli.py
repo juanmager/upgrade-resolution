@@ -57,15 +57,25 @@ def collect_inputs(paths: Sequence[Path]) -> list[Path]:
     return list(found)
 
 
-def output_path(source: Path, *, output_dir: Path | None, scale: float, extension: str) -> Path:
+def output_path(source: Path, *, output_dir: Path | None, tag: str, extension: str) -> Path:
     """Return where the result for ``source`` is written.
 
-    The name is ``<stem>_x<scale>.<extension>``, placed in ``output_dir`` or, if it
+    The name is ``<stem>_<tag>.<extension>``, placed in ``output_dir`` or, if it
     is None, in an ``upscaled`` folder next to ``source`` so results are never
     mistaken for inputs when a folder is processed again.
     """
     directory = source.parent / DEFAULT_OUTPUT_SUBDIR if output_dir is None else output_dir
-    return directory / f"{source.stem}_x{scale:g}.{extension}"
+    return directory / f"{source.stem}_{tag}.{extension}"
+
+
+def fit_scale(width: int, height: int, box: tuple[int, int]) -> float:
+    """Return the largest scale at which a ``width`` x ``height`` image fits in ``box``.
+
+    The aspect ratio is kept, so one side of the result equals the box and the
+    other is at most the box.
+    """
+    box_width, box_height = box
+    return min(box_width / width, box_height / height)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -89,13 +99,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MODEL,
         help=f"modelo de IA (por defecto: {DEFAULT_MODEL}). {models_help}",
     )
-    parser.add_argument(
+    size_group = parser.add_mutually_exclusive_group()
+    size_group.add_argument(
         "-s",
         "--scale",
         type=_scale_argument,
         default=None,
         help="factor de aumento, p. ej. 2 o 1.5; 1 solo mejora la calidad "
         "(por defecto: el nativo del modelo, 4)",
+    )
+    size_group.add_argument(
+        "--size",
+        type=_size_argument,
+        default=None,
+        metavar="ANCHOxALTO",
+        help="tamaño final máximo, p. ej. 3840x2160: cada imagen se escala para "
+        "entrar justo en él sin deformarse",
     )
     parser.add_argument(
         "-o",
@@ -167,21 +186,25 @@ def main(
         return EXIT_SOME_FAILED
 
     scale = upscaler.native_scale if args.scale is None else args.scale
-    _report(
-        f"Modelo: {spec.name} | Dispositivo: {describe_device(upscaler.device)} "
-        f"| Escala: x{scale:g}"
-    )
+    box: tuple[int, int] | None = args.size
+    if box is None:
+        tag = f"x{scale:g}"
+        target = f"Escala: x{scale:g}"
+    else:
+        tag = f"{box[0]}x{box[1]}"
+        target = f"Tamaño: dentro de {tag}"
+    _report(f"Modelo: {spec.name} | Dispositivo: {describe_device(upscaler.device)} | {target}")
 
     failures = 0
     for index, source in enumerate(inputs, start=1):
         destination = output_path(
-            source, output_dir=args.output_dir, scale=scale, extension=args.format
+            source, output_dir=args.output_dir, tag=tag, extension=args.format
         )
         prefix = f"[{index}/{len(inputs)}] {source.name}"
         if destination.exists() and not args.overwrite:
             _report(f"{prefix}: ya existe {destination}, se omite (usa --overwrite)")
             continue
-        if not _process(upscaler, source, destination, scale, prefix):
+        if not _process(upscaler, source, destination, scale, box, prefix):
             failures += 1
 
     return EXIT_SOME_FAILED if failures else EXIT_OK
@@ -195,12 +218,22 @@ def load_upscaler(spec: ModelSpec, device: str, tile_size: int) -> Upscaler:
 
 
 def _process(
-    upscaler: Upscaler, source: Path, destination: Path, scale: float, prefix: str
+    upscaler: Upscaler,
+    source: Path,
+    destination: Path,
+    scale: float,
+    box: tuple[int, int] | None,
+    prefix: str,
 ) -> bool:
-    """Enhance one image; report the outcome and return whether it succeeded."""
+    """Enhance one image; report the outcome and return whether it succeeded.
+
+    If ``box`` is given, ``scale`` is ignored and the image is fitted inside it.
+    """
     started = time.perf_counter()
     try:
         image = load_image(source)
+        if box is not None:
+            scale = fit_scale(image.width, image.height, box)
         result = upscaler.upscale(
             image,
             scale=scale,
@@ -241,6 +274,19 @@ def _scale_argument(text: str) -> float:
     if not 0 < value <= _MAX_SCALE:
         raise argparse.ArgumentTypeError(f"debe estar entre 0 (excluido) y {_MAX_SCALE:g}")
     return value
+
+
+def _size_argument(text: str) -> tuple[int, int]:
+    width, separator, height = text.lower().partition("x")
+    try:
+        if not separator:
+            raise ValueError
+        size = (int(width), int(height))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"debe tener la forma ANCHOxALTO: {text}") from None
+    if min(size) < 1:
+        raise argparse.ArgumentTypeError("el ancho y el alto deben ser >= 1")
+    return size
 
 
 def _positive_int(text: str) -> int:

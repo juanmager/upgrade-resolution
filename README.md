@@ -28,11 +28,15 @@ upgrade-resolution foto.jpg                      # x4 con el modelo "photo"
 upgrade-resolution captura.png -m anime          # capturas, texto, ilustraciones
 upgrade-resolution foto.jpg -s 2                 # x2
 upgrade-resolution foto.jpg -s 1                 # mismo tamaño, solo mejora la calidad
+upgrade-resolution fondo.jpg --size 3840x2160    # lo más grande que entre en 4K
 upgrade-resolution C:\fotos -o C:\mejoradas -f webp   # carpeta completa
 ```
 
-Los resultados se guardan como `<nombre>_x<escala>.<formato>` en una carpeta
-`upscaled` junto a cada imagen, salvo que se indique `-o`. Si un resultado ya
+Los resultados se guardan como `<nombre>_x<escala>.<formato>` (o
+`<nombre>_<ANCHO>x<ALTO>.<formato>` con `--size`) en una carpeta `upscaled`
+junto a cada imagen, salvo que se indique `-o`. Con `--size`, cada imagen se
+escala por separado y sin deformarse hasta tocar el ancho o el alto indicado;
+sirve para llevar fondos de distintos tamaños a la resolución del monitor. Si un resultado ya
 existe, se omite; usa `--overwrite` para reemplazarlo. Ejecuta
 `upgrade-resolution --help` para ver todas las opciones.
 
